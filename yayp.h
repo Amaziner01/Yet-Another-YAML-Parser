@@ -9,9 +9,6 @@ extern "C" {
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include "debug.h"
-
 #include "mempool.h"
 
 enum yaml_type {
@@ -161,13 +158,13 @@ yaml_open( const char *path ) {
     fsize = ftell(fstream);
     fseek(fstream, 0, SEEK_SET);
 
-    yfile = (yaml_file_t*)y_alloc(sizeof(yaml_file_t));
+    yfile = (yaml_file_t*)malloc(sizeof(yaml_file_t));
 
     yfile->name = path;
     yfile->head = NULL;
     yfile->tail = NULL;
 
-    yfile->fbuffer = (char*)y_alloc(fsize + 1);
+    yfile->fbuffer = (char*)malloc(fsize + 1);
     fread(yfile->fbuffer, fsize, 1, fstream);
     yfile->fbuffer[fsize - 1] = '\0';
 
@@ -377,9 +374,9 @@ yaml_close( yaml_file_t *yfile ) {
         node = yfile->head;
     }
 
-    y_free(yfile->fbuffer);
+    free(yfile->fbuffer);
     terminate_mempool(yfile->mempool);
-    y_free(yfile);
+    free(yfile);
     yfile = NULL;
 }
 
