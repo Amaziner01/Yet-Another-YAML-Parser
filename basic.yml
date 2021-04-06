@@ -9,10 +9,11 @@ $Mom$Is$My$Mom$: true
 name: Tabitha Bitumen
 job: Developer
 
+
 create_key: yes
 needs_agent: no
 knows_oop: True
-likes_emacs: TRUE
+likes_vim: TRUE
 uses_cvs: false
 
 

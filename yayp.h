@@ -10,37 +10,9 @@ extern "C" {
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef DEBUG
+#include "debug.h"
 
-    static int total_allocated = 0;
-    static int total_freed = 0;
-
-    void *
-    y_alloc( size_t size ) {
-        total_allocated++;
-        return malloc(size);
-    }
-
-    int
-    y_free( void *ptr ) {
-
-        if ( ptr ) {
-            total_freed++;
-            free(ptr);
-            return 1;
-        }
-
-        return 0;
-    }
-
-#else
-
-    #define y_alloc malloc
-
-    #define y_free free
-
-#endif
-
+#include "mempool.h"
 
 enum yaml_type {
     NUMBER = 0,
@@ -56,6 +28,7 @@ struct yaml_node {
     char *label;
 
     union {
+        unsigned char boolean;
         double num;
         char *str;
     } value;
@@ -68,6 +41,7 @@ struct yaml_file {
     char *fbuffer;
     struct yaml_node *head;
     struct yaml_node *tail;
+    mempool_t *mempool;
 };
 
 typedef struct yaml_file yaml_file_t;
@@ -89,32 +63,17 @@ typedef struct yaml_file yaml_file_t;
 #define SKIP_NEWLINE(c) while ( IS_NEWLINE(*c) ) c++
 
 
-void
-yaml_insert_node( struct yaml_file *file, enum yaml_type type, char *label, char *data ) {
+static void
+yaml_insert_string_node( struct yaml_file *file, char *label, char *data ) {
     if ( !file ) return;
 
-    struct yaml_node *node = (struct yaml_node*)y_alloc(sizeof(struct yaml_node));
+    struct yaml_node *node = (struct yaml_node*)alloc(sizeof(struct yaml_node), file->mempool);
 
     /* Set Values */
-    node->type = type;
+    node->type = STRING;
     node->label = label;
     node->next = NULL;
-
-    /* Set data */
-    switch ( type ) {
-        case NUMBER: {
-            node->value.num = atof(data);
-        } break;
-
-        case STRING: {
-            node->value.str = data;
-        } break;
-
-        default: {
-            y_free(node);
-            return;
-        } break;
-    }
+    node->value.str = data;
     
     if (!file->tail) {
         file->tail = node;
@@ -128,7 +87,56 @@ yaml_insert_node( struct yaml_file *file, enum yaml_type type, char *label, char
     return;
 }
 
-yaml_file_t *
+static void
+yaml_insert_number_node( struct yaml_file *file, char *label, double data ) {
+    if ( !file ) return;
+
+    struct yaml_node *node = (struct yaml_node*)alloc(sizeof(struct yaml_node), file->mempool);
+
+    /* Set Values */
+    node->type = NUMBER;
+    node->label = label;
+    node->next = NULL;
+    node->value.num = data;
+    
+    if (!file->tail) {
+        file->tail = node;
+        file->head = file->tail;
+        return;
+    }
+
+    file->tail->next = node;
+    file->tail = node;
+
+    return;
+}
+
+static void
+yaml_insert_bool_node( struct yaml_file *file, char *label, unsigned char data ) {
+    if ( !file ) return;
+
+    struct yaml_node *node = (struct yaml_node*)alloc(sizeof(struct yaml_node), file->mempool);
+
+    /* Set Values */
+    node->type = BIN;
+    node->label = label;
+    node->next = NULL;
+    node->value.boolean = data;
+    
+    if (!file->tail) {
+        file->tail = node;
+        file->head = file->tail;
+        return;
+    }
+
+    file->tail->next = node;
+    file->tail = node;
+
+    return;
+}
+
+
+static yaml_file_t *
 yaml_open( const char *path ) {
 
     FILE *fstream;
@@ -138,6 +146,9 @@ yaml_open( const char *path ) {
 
     char *lbeg;
     char *dbeg;
+
+    const char *falses[] = {"false", "no", "FALSE", "False"};
+    const char *trues[] = {"true", "yes", "TRUE", "True"};
     
     fstream = fopen(path, "rb");
 
@@ -163,9 +174,14 @@ yaml_open( const char *path ) {
     fclose(fstream);
     fcursor = yfile->fbuffer;
 
-    
+    yfile->mempool = create_mempool(2048);
+    if (!yfile->mempool) {
+        free(yfile);
+        return NULL;
+    }
 
     enum yaml_type stype;
+    unsigned char bval;
 
     /* Parsing */
     while (*fcursor != '\0') {
@@ -214,7 +230,7 @@ yaml_open( const char *path ) {
                     }
                     else {
                         dbeg = fcursor;
-                        stype = STRING;
+                        stype = STRING;                        
                     }
 
                     /* NULL Termination */
@@ -225,6 +241,23 @@ yaml_open( const char *path ) {
                     short offset = *fcursor == '\r' ? 2 : 1;
                     *fcursor = '\0';
                     fcursor += offset;
+
+                    for (int i = 0; i < 4; i++) {
+                        if ( !strcmp(dbeg, trues[i]) ) {
+                            stype = BIN;
+                            bval = 1;
+                            goto node;  
+                        }
+                    }
+
+                    for (int i = 0; i < 4; i++) {
+                        if ( !strcmp(dbeg, falses[i]) ) {
+                            stype = BIN;
+                            bval = 0;
+                            goto node;  
+                        }
+                    }
+
                 }
                 else {
                     /* Handle "No space after colon" */
@@ -235,7 +268,24 @@ yaml_open( const char *path ) {
 
             /* INSERT DATA */
             /* printf("Label: %s, Data: %s\n", lbeg, dbeg); */
-            yaml_insert_node(yfile, stype, lbeg, dbeg);
+
+node:
+
+            switch ( stype ) {
+                case NUMBER: {
+                    yaml_insert_number_node(yfile, lbeg, atof(dbeg));
+                } break;
+
+                case STRING: {
+                    yaml_insert_string_node(yfile, lbeg, dbeg);
+                } break;
+
+                case BIN: {
+                    yaml_insert_bool_node(yfile, lbeg, bval);
+                } break;
+
+                default: break;
+            }
 
         }
         else if ( IS_BLANK(*fcursor) ) {
@@ -253,8 +303,8 @@ yaml_open( const char *path ) {
     return yfile;
 }
 
-char *
-yaml_get_string( yaml_file_t *yfile, char *label ) {
+static char *
+yaml_get_string( yaml_file_t *yfile, const char *label ) {
     if ( !yfile ) return NULL;
 
     struct yaml_node *node = yfile->head;
@@ -273,8 +323,8 @@ yaml_get_string( yaml_file_t *yfile, char *label ) {
     return NULL;  
 }
 
-double
-yaml_get_number( yaml_file_t *yfile, char *label ) {
+static double
+yaml_get_number( yaml_file_t *yfile, const char *label ) {
     if ( !yfile ) return 0.0;
 
     struct yaml_node *node = yfile->head;
@@ -293,7 +343,27 @@ yaml_get_number( yaml_file_t *yfile, char *label ) {
     return 0.0;  
 }
 
-void
+static unsigned char
+yaml_get_bool( yaml_file_t *yfile, const char *label ) {
+    if ( !yfile ) return 0;
+
+    struct yaml_node *node = yfile->head;
+    while ( node ) {
+        if (!strcmp(label, node->label)) {
+            if (node->type == BIN) {
+                return node->value.boolean;
+            }
+            fprintf(stderr, "This label is not a bool\n");
+            return 0;
+        }
+
+        node = node->next;
+    }
+    fprintf(stderr, "Label not found.\n");
+    return 0;  
+}
+
+static void
 yaml_close( yaml_file_t *yfile ) {
     if ( !yfile ) return;
 
@@ -303,11 +373,12 @@ yaml_close( yaml_file_t *yfile ) {
         yfile->head = node->next;
 
         /* Free node */
-        y_free(node);
+        release(node, yfile->mempool);
         node = yfile->head;
     }
 
     y_free(yfile->fbuffer);
+    terminate_mempool(yfile->mempool);
     y_free(yfile);
     yfile = NULL;
 }
