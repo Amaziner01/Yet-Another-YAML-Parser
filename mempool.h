@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "debug.h"
+
 #define inline_ static inline
 
 #define RET_ERR(msg, ret) { fprintf(stderr, "%s\n", msg); return ret; }
@@ -30,12 +32,12 @@ typedef struct mempool mempool_t;
 
 inline_ mempool_t *
 create_mempool( u32_t size ) {
-    mempool_t *m = (mempool_t*)malloc(sizeof(mempool_t)); 
+    mempool_t *m = (mempool_t*)y_alloc(sizeof(mempool_t)); 
     if (!m) return NULL;
 
-    m->mem_block = malloc(size);
+    m->mem_block = y_alloc(size);
     if (!m->mem_block) {
-        free(m);
+        y_free(m);
         return NULL;
     }
 
@@ -51,8 +53,8 @@ inline_ void
 terminate_mempool( mempool_t *mempool ) {
     if (!mempool) return;
 
-    free(mempool->mem_block);
-    free(mempool);
+    y_free(mempool->mem_block);
+    y_free(mempool);
 }
 
 inline_ void
