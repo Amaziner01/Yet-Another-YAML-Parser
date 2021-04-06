@@ -5,11 +5,47 @@
 extern "C" {
 #endif
 
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "mempool.h"
+
+#define inline_ static
+
+#define IS_NUMBER(x) ( (x <= '9') && (x >= '0') || (x == '.') )
+
+#define IS_SYMBOL(x) ( ((x <= 'z') && (x >= 'a')) || ((x <= 'Z') && (x >= 'A')) || (x == '_') || (x == '$') || (x == '-') ) 
+
+#define IS_BLANK(x) ( (x == '\t') || (x == ' ') )
+
+#define IS_NEWLINE(x) ( (x == '\n') || (x == '\r') )
+
+#define IS_QUOTE(x) ( (x == '\'') || (x == '\"') )
+
+#define SKIP_BLANK(c) while ( IS_BLANK(*c) ) c++
+
+#define SKIP_NEWLINE(c) while ( IS_NEWLINE(*c) ) c++
+
+
+/* MEMPOOL STRUCTS */
+
+struct yml_alloc_header {
+    struct yml_alloc_header *next;
+    unsigned size;
+    unsigned char freed;
+};
+
+typedef struct yml_alloc_header yml_alloc_header_t;
+
+struct yml_mempool {
+    void *mem_block;
+    unsigned mem_size;
+    unsigned mem_used_bytes;
+};
+
+typedef struct yml_mempool yml_mempool_t;
+
+
+/* YAML STRUCTS */
 
 enum yaml_type {
     NUMBER = 0,
@@ -38,29 +74,104 @@ struct yaml_file {
     char *fbuffer;
     struct yaml_node *head;
     struct yaml_node *tail;
-    mempool_t *mempool;
+    yml_mempool_t *mempool;
 };
 
 typedef struct yaml_file yaml_file_t;
 
 
-/* Lexical Analisys Functions */
-#define IS_NUMBER(x) ( (x <= '9') && (x >= '0') || (x == '.') )
+/* MEMPOOL FUNCS */
 
-#define IS_SYMBOL(x) ( ((x <= 'z') && (x >= 'a')) || ((x <= 'Z') && (x >= 'A')) || (x == '_') || (x == '$') || (x == '-') ) 
+inline_  yml_mempool_t *
+create_mempool( unsigned size ) {
+    yml_mempool_t *m = (yml_mempool_t*)malloc(sizeof(yml_mempool_t)); 
+    if (!m) return NULL;
 
-#define IS_BLANK(x) ( (x == '\t') || (x == ' ') )
+    m->mem_block = malloc(size);
+    if (!m->mem_block) {
+        free(m);
+        return NULL;
+    }
 
-#define IS_NEWLINE(x) ( (x == '\n') || (x == '\r') )
+    memset(m->mem_block, 0, size);
 
-#define IS_QUOTE(x) ( (x == '\'') || (x == '\"') )
+    m->mem_used_bytes = 0;
+    m->mem_size = size;
 
-#define SKIP_BLANK(c) while ( IS_BLANK(*c) ) c++
+    return m;
+}
 
-#define SKIP_NEWLINE(c) while ( IS_NEWLINE(*c) ) c++
+inline_  void
+terminate_mempool( yml_mempool_t *yml_mempool ) {
+    if (!yml_mempool) return;
+
+    free(yml_mempool->mem_block);
+    free(yml_mempool);
+}
+
+inline_  void *
+alloc( unsigned size, yml_mempool_t *yml_mempool ) {
+    if (!yml_mempool) return NULL;
+    if (size == 0) return NULL;
+    
+
+    yml_alloc_header_t *last_header = (yml_alloc_header_t*)yml_mempool->mem_block;
+    yml_alloc_header_t *yml_alloc_header;
+
+    int final_size = size;
+    
+    if (!last_header->size) {
+        yml_alloc_header = last_header;
+        goto assignment;
+    }
+
+    while (last_header->next) {
+        if (last_header->freed) {
+            if (last_header->size >= size) {
+                yml_alloc_header = last_header;
+                goto assignment; 
+            } 
+        }
+
+        last_header = last_header->next;
+    }
+
+    final_size += sizeof(yml_alloc_header_t);
+    yml_alloc_header =
+        (yml_alloc_header_t*)((unsigned long long)last_header + sizeof(yml_alloc_header_t) + last_header->size);
+
+    last_header->next = yml_alloc_header;
+    yml_alloc_header->next = NULL;
+
+assignment:
+    yml_mempool->mem_used_bytes += final_size;
+
+    if (yml_mempool->mem_used_bytes + final_size > yml_mempool->mem_size) {
+        last_header->next = NULL;
+        fprintf(stderr, "Not enough memory to allocate", NULL);
+    }
+
+    yml_alloc_header->freed = 0;
+    yml_alloc_header->size = size;
+
+    return (void*)((unsigned long long)yml_alloc_header + sizeof(yml_alloc_header_t));
+}
+
+inline_ void
+release( void *ptr, yml_mempool_t *yml_mempool ) {
+    if(!ptr) return;
+    if (!yml_mempool) return;
+
+    yml_alloc_header_t *yml_alloc_header = 
+        (yml_alloc_header_t*)((unsigned long long)ptr - sizeof(yml_alloc_header_t));
+    
+    yml_alloc_header->freed = 1;
+}
 
 
-static void
+/* YAML FILE FUNCS */
+
+inline_ void
 yaml_insert_string_node( struct yaml_file *file, char *label, char *data ) {
     if ( !file ) return;
 
@@ -84,7 +195,7 @@ yaml_insert_string_node( struct yaml_file *file, char *label, char *data ) {
     return;
 }
 
-static void
+inline_ void
 yaml_insert_number_node( struct yaml_file *file, char *label, double data ) {
     if ( !file ) return;
 
@@ -108,7 +219,7 @@ yaml_insert_number_node( struct yaml_file *file, char *label, double data ) {
     return;
 }
 
-static void
+inline_ void
 yaml_insert_bool_node( struct yaml_file *file, char *label, unsigned char data ) {
     if ( !file ) return;
 
@@ -132,8 +243,7 @@ yaml_insert_bool_node( struct yaml_file *file, char *label, unsigned char data )
     return;
 }
 
-
-static yaml_file_t *
+inline_ yaml_file_t *
 yaml_open( const char *path ) {
 
     FILE *fstream;
@@ -300,7 +410,7 @@ node:
     return yfile;
 }
 
-static char *
+inline_ char *
 yaml_get_string( yaml_file_t *yfile, const char *label ) {
     if ( !yfile ) return NULL;
 
@@ -320,7 +430,7 @@ yaml_get_string( yaml_file_t *yfile, const char *label ) {
     return NULL;  
 }
 
-static double
+inline_ double
 yaml_get_number( yaml_file_t *yfile, const char *label ) {
     if ( !yfile ) return 0.0;
 
@@ -340,7 +450,7 @@ yaml_get_number( yaml_file_t *yfile, const char *label ) {
     return 0.0;  
 }
 
-static unsigned char
+inline_ unsigned char
 yaml_get_bool( yaml_file_t *yfile, const char *label ) {
     if ( !yfile ) return 0;
 
@@ -360,7 +470,7 @@ yaml_get_bool( yaml_file_t *yfile, const char *label ) {
     return 0;  
 }
 
-static void
+inline_ void
 yaml_close( yaml_file_t *yfile ) {
     if ( !yfile ) return;
 
@@ -379,6 +489,7 @@ yaml_close( yaml_file_t *yfile ) {
     free(yfile);
     yfile = NULL;
 }
+
 
 #ifdef __cplusplus
 }
